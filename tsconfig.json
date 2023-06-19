@@ -6,6 +6,8 @@
         "strict": true,
         "strictFunctionTypes": true,
         "noFallthroughCasesInSwitch": true,
-        "lib": ["ESNext"]
+        "lib": ["ESNext"],
+        "target": "ESNext",
+        "module": "CommonJS"
     }
 }
