@@ -1,0 +1,11 @@
+{
+    "include": ["src"],
+    "compilerOptions": {
+        "outDir": "build",
+        "forceConsistentCasingInFileNames": true,
+        "strict": true,
+        "strictFunctionTypes": true,
+        "noFallthroughCasesInSwitch": true,
+        "lib": ["ESNext"]
+    }
+}
