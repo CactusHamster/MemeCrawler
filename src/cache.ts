@@ -19,9 +19,24 @@ export class Cache {
         this.maxAge = ms;
         return this;
     }
+    isExpired (item: CacheData): boolean { return item.created + this.maxAge < Date.now(); }
+    /**
+     * Delete every known cache file.
+     */
     clear (): Cache {
         for (let entry of this.contents) this.delItem(entry);
         this.refreshContents();
+        return this;
+    }
+    /**
+     * Delete every expired item in cache.
+     */
+    clean (): Cache {
+        for (let entry of this.contents) {
+            let item = this.readItem(entry);
+            if (item === null) continue;
+            else if (this.isExpired(item)) this.delItem(entry);
+        }
         return this;
     }
     /**
@@ -53,6 +68,10 @@ export class Cache {
         this.refreshContents();
         return this;
     }
+    /**
+     * The path to the specified cache item.
+     * @param name Name of the cache item.
+     */
     itemPath (name: string): string {
         return join(this.dir, name.endsWith(".json") ? name : name + ".json");
     }
@@ -67,7 +86,7 @@ export class Cache {
         return this.contents.includes(name);
     }
     /**
-     * Reads an item from the cache's directory. Returns null if item does not exist.
+     * Reads an item from the cache's directory. Returns null if item does not exist. Does not check expiration.
      * @param name Name of cache entry.
      * @param refresh Whether to refresh list of cache entries.
      */
@@ -133,7 +152,7 @@ export class Cache {
      */
     item<Value> (name: string, value: Value | (() => Value)): PromiseResult<Value> {
         let cachedata: null | CacheData = this.readItem(name);
-        if (cachedata === null || cachedata.created + this.maxAge < Date.now()) {
+        if (cachedata === null || this.isExpired(cachedata)) {
             let result: any;
             if (value instanceof Function) result = value();
             else result = value;
