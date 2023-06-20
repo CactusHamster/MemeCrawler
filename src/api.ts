@@ -50,6 +50,7 @@ export interface Message {
     id: snowflake;
     channel_id: snowflake;
     author?: User;
+    timestamp: string;
     webhook_id?: snowflake;
     attachments: Attachment[];
     embeds: Embed[];
@@ -337,6 +338,7 @@ export class API {
     }
     async getChannelMessages(channel: string | Channel, options: GetChannelMessagesOptions): Promise<Message[]> {
         if (typeof channel !== "string") channel = channel.id;
+        if (!options) options = { limit: 50 };
         let result = await this.endpoint(["channels", channel, "messages"], {
             query: {
                 around: options.around,
