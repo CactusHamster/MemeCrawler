@@ -130,6 +130,28 @@ export interface GetChannelMessagesOptions {
     after?: snowflake;
     limit: number;
 }
+// https://discord.com/api/v9/channels/1092006921533399142/messages/search?author_id=762771482434600992&mentions=676750057340403742&mentions=762771482434600992
+// https://discord.com/api/v9/channels/1092006921533399142/messages/search?max_id=1115897934643200000&min_id=1114448383180800000
+export type ChannelSearchHasOption = "link" | "embed" | "file" | "video" | "image" | "sound" | "sticker";
+export interface ChannelSearchOptions {
+    from?: snowflake;
+    mentions?: snowflake | snowflake[];
+    has?: ChannelSearchHasOption | ChannelSearchHasOption[];
+    before?: snowflake;
+    after?: snowflake;
+    content?: string;
+}
+export interface ChannelSearchResult {
+    total_results: number;
+    messages: Message[];
+    analytics_id: string;
+}
+interface EndpointRequest {
+    url: string | URL;
+    options?: RequestOptions & { body?: any };
+    resolve: Function,
+    reject: (reason?: any) => void
+}
 export class DiscordError {
     code: number;
     message: string;
@@ -144,12 +166,6 @@ export class DiscordError {
     toString () {
         return this.message;
     }
-}
-interface EndpointRequest {
-    url: string | URL;
-    options?: RequestOptions & { body?: any };
-    resolve: Function,
-    reject: (reason?: any) => void
 }
 let delay = (ms = 0): Promise<ReturnType<typeof setTimeout>> => new Promise(res => { let t: ReturnType<typeof setTimeout> = setTimeout(() => res(t), ms); })
 export class API {
@@ -220,7 +236,7 @@ export class API {
      * @param path API path.
      * @param options HTTPS request options. Can include request body.
      */
-    async endpoint (path: string | string[], options?: RequestOptions & { body?: any, query?: string | { [key: string]: primitive } }): Promise<(Buffer | string | any)> {
+    async endpoint (path: string | string[], options?: RequestOptions & { body?: any, query?: string | { [key: string]: primitive | primitive[] } }): Promise<(Buffer | string | any)> {
         let urlpath: string = resolveposix( "/", "api", `v${this.apiVersion}`, ...path );
         let url: string = "https://" + "discord.com" + urlpath;
         if (!options) options = {};
@@ -232,7 +248,13 @@ export class API {
                 for (let key in options.query) {
                     let value = options.query[key];
                     if (value === undefined || value === null) continue;
-                    s.push(key + "=" + value.toString());
+                    if (Array.isArray(value)) {
+                        for (let subval of value) {
+                            if (subval === undefined || subval === null) continue;
+                            s.push(key + "=" + subval.toString());
+                        }
+                    }
+                    else s.push(key + "=" + value.toString());
                 }
                 querystring = "?" + s.join("&");
             }
@@ -256,6 +278,13 @@ export class API {
                 return JSON.parse(data.toString("utf-8"));
                 break;
         }
+    }
+    static isChannelSearchResult (result: any): result is ChannelSearchResult {
+        if (typeof result.total_results !== "number") return false;
+        if (!Array.isArray(result.messages)) return false;
+        if (result.messages.length > 0 && !API.isMessage(result.messages[0])) return false;
+        if (typeof result.analytics_id !== "string") return false;
+        return true;
     }
     static isMessage (msg: any): msg is Message {
         if (typeof msg.id !== "string") return false;
@@ -328,12 +357,12 @@ export class API {
     }
     async myGuilds (): Promise<Guild[]> {
         let result = await this.endpoint(["users", "@me", "guilds"]);
-        if (API.isGuild(result[0])) return result;
+        if (Array.isArray(result) && (result.length === 0 || API.isGuild(result[0]))) return result;
         else throw new Error(new DiscordError(result).toString());
     }
     async guildChannels (id: string): Promise<Channel[]> {
         let result = await this.endpoint(["guilds", id, "channels"]);
-        if (result.length && API.isChannel(result[0])) return result;
+        if (Array.isArray(result) && (result.length === 0 || API.isChannel(result[0]))) return result;
         else throw new Error(new DiscordError(result).toString());
     }
     async getChannelMessages(channel: string | Channel, options: GetChannelMessagesOptions): Promise<Message[]> {
@@ -348,6 +377,22 @@ export class API {
             }
         })
         if (Array.isArray(result) && (result.length === 0 || API.isMessage(result[0]))) return result;
+        else throw new Error(new DiscordError(result).toString());
+    }
+    async searchChannelMessages (channel: string | Channel, search: ChannelSearchOptions): Promise<ChannelSearchResult> {
+        if (typeof channel !== "string") channel = channel.id;
+        if (Object.keys(search).length === 0) throw new Error("Empty search query.")
+        let result = await this.endpoint(["channels", channel, "messages", "search"], {
+            query: {
+                from: search.from,
+                mentions: search.mentions,
+                has: search.has,
+                before: search.before,
+                after: search.after,
+                content: search.content
+            }
+        })
+        if (API.isChannelSearchResult(result)) return result;
         else throw new Error(new DiscordError(result).toString());
     }
 }
