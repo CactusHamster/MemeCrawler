@@ -34,6 +34,8 @@ export interface ArchiveChunkOptions extends ArchiveOptions {
     guild?: snowflake
     channel: snowflake
 }
+interface MessageFile<T = Attachment | Message> { url: string | URL, filename: string, source: T, type: T extends Attachment ? 0 : 1 };
+
 let quickCopy = <T>(src: T): any => {
     let dest: { [key: string | number]: any } = {};
     for (let key in src) dest[key] = src[key];
@@ -115,6 +117,19 @@ export class Archiver extends EventEmitter {
     }
     static stringifyAttachment (attach: Attachment): string {
         return JSON.stringify(attach);
+    }
+    static extractMessageFiles (msg: Message): MessageFile[] {
+        let files: MessageFile[] = [];
+        let { content } = msg;
+        let contenturl: null | URL;
+        try { contenturl = new URL(msg.content); }
+        catch (e) { contenturl = null }
+        if (contenturl !== null && (contenturl.protocol === "http://" || contenturl.protocol === "https://")) {
+            files.push({ type: 1, source: msg, url: contenturl, filename: urlfilename(contenturl) });
+        }
+        if (msg?.attachments?.length)
+            for (let attach of msg.attachments) files.push({ type: 0, source: attach, url: attach.url, filename: attach.filename });
+        return files;
     }
     async archiveMessageChunk (messages: Message[], options: ArchiveChunkOptions) {
         // most recent message is index 0, latest is index last
