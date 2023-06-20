@@ -5,9 +5,10 @@ import { createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, st
 import { ClientRequest, IncomingMessage } from "node:http";
 import { request } from "node:https";
 import { mkdir, writeFile } from "node:fs/promises";
+import { ChunkHandler } from "./chunkhandler";
 
 /*
-Save files in a structure of root -> guildname -> channelname -> chunkid 
+Save files in a structure of root -> guildname -> channelname -> chunkid -> ( entry-id.json | (files -> id.json) )
 */
 
 export interface APIOptions {
@@ -18,7 +19,7 @@ export interface ArchiveOptions {
     media: boolean;
     nonmedia: boolean;
     text: boolean;
-//     chunksize?: number;
+    chunklength?: number;
     before?: number;
     after?: number;
     maxFileSize?: number;
@@ -35,6 +36,7 @@ export interface ArchiveChunkOptions extends ArchiveOptions {
     channel: snowflake
 }
 interface MessageFile<T = Attachment | Message> { url: string | URL, filename: string, source: T, type: T extends Attachment ? 0 : 1 };
+interface MessageContent { author: string, content: string, source: Message }
 
 let quickCopy = <T>(src: T): any => {
     let dest: { [key: string | number]: any } = {};
@@ -96,122 +98,77 @@ export class Archiver extends EventEmitter {
         newoptions.guild = guild;
         for (let channel of channels) this.archiveChannel(channel, newoptions);
     }
-    // TODO: make options actually do something :3
-    async archiveChannel (channel: snowflake | Channel, options: ArchiveChannelOptions) {
-        if (typeof channel === "string") channel = await this.api.channel(channel);
+    async *listChannelMessages (channel: snowflake, options: ArchiveChannelOptions): AsyncGenerator<Message[], void, unknown> {
         let lastMessage: string | undefined;
         let limit = 100;
-        let newoptions = quickCopy(options);
-        newoptions.channel = channel.id;
         while (true) {
             let messages: Message[] = await this.api.getChannelMessages(channel, { limit: 100, before: lastMessage });
-            await this.archiveMessageChunk(messages, newoptions);
+            yield messages;
             lastMessage = messages[messages.length - 1].id;
             // If there are no more messages.
             if (messages.length < limit) break;
         }
     }
     // kinda lame but it works :P
-    static stringifyMessage (msg: Message): string {
-        return JSON.stringify(msg);
-    }
-    static stringifyAttachment (attach: Attachment): string {
-        return JSON.stringify(attach);
-    }
-    static extractMessageFiles (msg: Message): MessageFile[] {
+    static stringifyMessage (msg: Message): string { return JSON.stringify(msg); }
+    static stringifyAttachment (attach: Attachment): string { return JSON.stringify(attach); }
+    private static extractMessageFiles (msg: Message): MessageFile[] {
         let files: MessageFile[] = [];
-        let { content } = msg;
         let contenturl: null | URL;
         try { contenturl = new URL(msg.content); }
         catch (e) { contenturl = null }
-        if (contenturl !== null && (contenturl.protocol === "http://" || contenturl.protocol === "https://")) {
+        if (contenturl !== null && (contenturl.protocol === "http://" || contenturl.protocol === "https://")) 
             files.push({ type: 1, source: msg, url: contenturl, filename: urlfilename(contenturl) });
-        }
         if (msg?.attachments?.length)
             for (let attach of msg.attachments) files.push({ type: 0, source: attach, url: attach.url, filename: attach.filename });
         return files;
     }
-    async archiveMessageChunk (messages: Message[], options: ArchiveChunkOptions) {
-        // most recent message is index 0, latest is index last
+    private static extractMessageContent (msg: Message): MessageContent {
+        let { content } = msg;
+        let author = msg?.author?.username ?? "unknown";
+        return { content, author, source: msg };
+    }
+    async saveFileChunk (options: ArchiveChunkOptions, chunk: MessageFile[], type: "media" | "nonmedia") {
         let dir = this.#destination;
         if (options.guild) dir = join(dir, options.guild);
         if (options.channel) dir = join(dir, options.channel);
-        let foldername = messages[0].id;
-        dir = join(dir, foldername);
-        dir = resolve(dir);
-        mkdirSync(dir, { recursive: true });
-        // subfolders = ["text", "media", "nonmedia"];
-        if (options.media && !existsSync(join(dir, "media"))) await mkdir(join(dir, "media"));
-        if (options.nonmedia && !existsSync(join(dir, "nonmedia"))) await mkdir(join(dir, "nonmedia"));
-        if (options.text && !existsSync(join(dir, "text"))) await mkdir(join(dir, "text"));
-        interface File { url: string | URL, filename: string, source: Attachment | Message, type: 0 | 1 };
-        interface AttachFile extends File { source: Attachment, type: 0 };
-        interface MSGFile extends File { source: Message, type: 1 };
-        interface MSG { content: string, source: Message };
-        let text: MSG[] = [];
-        let files: (MSGFile | AttachFile)[] = [];
-        for (let msg of messages) {
-            if (msg.content.length > 0) {
-                if (options.text) text.push({
-                    content: msg.content,
-                    source: msg
-                })
+        dir = join(dir, type);
+
+    }
+    async saveTextChunk (options: ArchiveChunkOptions, chunk: MessageContent[]) {
+        let dir = this.#destination;
+        if (options.guild) dir = join(dir, options.guild);
+        if (options.channel) dir = join(dir, options.channel);
+        dir = join(dir, "text");
+
+    }
+    // TODO: make options actually do something :3
+    async archiveChannel (channel: snowflake | Channel, options: ArchiveChannelOptions) {
+        if (typeof channel !== "string") channel = channel.id;
+        let chunklength = options.chunklength ?? 50;
+        // Handle splitting content into chunks.
+        let chunkers = { media: new ChunkHandler<MessageFile>(chunklength), nonmedia: new ChunkHandler<MessageFile>(chunklength), text: new ChunkHandler<MessageContent>(chunklength), }
+        let newoptions = quickCopy(options);
+        newoptions.channel = channel;
+        chunkers.media.on("chunk", (chunk) => this.saveFileChunk(newoptions, chunk, "media"));
+        chunkers.nonmedia.on("chunk", (chunk) => this.saveFileChunk(newoptions, chunk, "nonmedia"));
+        chunkers.text.on("chunk", (chunk) => this.saveTextChunk(newoptions, chunk));
+        // Iterate through all channel messages.
+        const iterator = this.listChannelMessages(channel, options);
+        while (true) {
+            let { done, value: messages } = await iterator.next()
+            if (done || messages == undefined) break;
+            for (let msg of messages) {
                 if (options.media || options.nonmedia) {
-                    let contentURL: null | URL = null;
-                    try { contentURL = new URL(msg.content); }
-                    catch (e) {}
-                    if (contentURL !== null) {
-                        let file: MSGFile = { url: contentURL, filename: urlfilename(contentURL), source: msg, type: 1 };
-                        files.push(file);
+                    let files = Archiver.extractMessageFiles(msg);
+                    for (let file of files) {
+                        
+                        let ismedia = isMedia(file.filename);
+                        if (ismedia && options.media) chunkers.media.push(file);
+                        if (!ismedia && options.nonmedia) chunkers.nonmedia.push(file);
                     }
                 }
-            }
-            if ((options.media || options.nonmedia) && msg.attachments.length > 0) {
-                for (let attach of msg.attachments) {
-                    let file: AttachFile = {
-                        url: attach.url,
-                        filename: attach.filename,
-                        source: attach,
-                        type: 0
-                    }
-                    files.push(file)
-                }
-            }
-        }
-        if (options.text) {
-            let txtfile = join(dir, "text", messages[0]?.id ?? "unknown");
-            writeFile(txtfile, JSON.stringify(text));
-            writeFile(txtfile + ".source", JSON.stringify(text.map(t => Archiver.stringifyMessage(t.source))))
-        }
-        if (options.media || options.nonmedia) {
-            let tryLimit = 3;
-            for (let i = 0; i < files.length; i++) {
-                let file = files[i];
-                if (file.type === 0 && file.source.size > (options.maxFileSize ?? Infinity)) continue;
-                let ismedia = isMedia(file.filename);
-                if (ismedia && !options.media) continue;
-                if (!ismedia && !options.nonmedia) continue;
-                let subdir = join(dir, ismedia ? "media" : "nonmedia");
-                let filepath = join(subdir, file.filename);
-                if (existsSync(filepath)) continue;
-                let tries = 0;
-                // Attempt to download the file.
-                while (tries < tryLimit) {
-                    try {
-                        let { response, request } = await getResponse(file.url);
-                        if (+(response.headers["content-length"] ?? 0) > (options.maxFileSize ?? Infinity)) continue;
-                        const stream = createWriteStream(filepath)
-                        response.pipe(stream);
-                        break;
-                    }
-                    catch (e) {
-                        tries += 1;
-                        if (tries === tryLimit) console.warn(`Failed to download ${file.url}.`, "\n", e);
-                    }
-                }
-                let sourceFileName = file.filename + ".source"
-                let sourceText = file.type === 0 ? Archiver.stringifyAttachment(file.source) : Archiver.stringifyMessage(file.source);
-                await writeFile(join(subdir, sourceFileName), sourceText);
+                if (options.text) chunkers.text.push(Archiver.extractMessageContent(msg))
             }
         }
     }
