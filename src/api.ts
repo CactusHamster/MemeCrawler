@@ -48,6 +48,7 @@ export interface Reaction {
 }
 export interface Message {
     id: snowflake;
+    content: string;
     channel_id: snowflake;
     author?: User;
     timestamp: string;
@@ -160,7 +161,7 @@ export class DiscordError {
         if (response instanceof Buffer) response = response.toString();
         if (typeof response === "string") response = JSON.parse(response);
         this.code = +(response.code ?? 50035);
-        this.message = response.toString();
+        this.message = response.message;
         this.errors = response.errors;
     }
     toString () {
@@ -343,27 +344,27 @@ export class API {
     async me (): Promise<User> {
         let result = await this.endpoint(["users", "@me"]);
         if (API.isUser(result)) return result;
-        else throw new Error(new DiscordError(result).toString());
+        else throw new Error((new DiscordError(result)).toString());
     }
     async channel (id: string): Promise<Channel> {
         let result = await this.endpoint(["channels", id]);
         if (API.isChannel(result)) return result;
-        else throw new Error(new DiscordError(result).toString());
+        else throw new Error((new DiscordError(result)).toString());
     }
     async guild (id: string): Promise<Guild> {
         let result = await this.endpoint(["guilds", id]);
         if (API.isGuild(result)) return result;
-        else throw new Error(new DiscordError(result).toString());
+        else throw new Error((new DiscordError(result)).toString());
     }
     async myGuilds (): Promise<Guild[]> {
         let result = await this.endpoint(["users", "@me", "guilds"]);
         if (Array.isArray(result) && (result.length === 0 || API.isGuild(result[0]))) return result;
-        else throw new Error(new DiscordError(result).toString());
+        else throw new Error((new DiscordError(result)).toString());
     }
     async guildChannels (id: string): Promise<Channel[]> {
         let result = await this.endpoint(["guilds", id, "channels"]);
         if (Array.isArray(result) && (result.length === 0 || API.isChannel(result[0]))) return result;
-        else throw new Error(new DiscordError(result).toString());
+        else throw new Error((new DiscordError(result)).toString());
     }
     async getChannelMessages(channel: string | Channel, options: GetChannelMessagesOptions): Promise<Message[]> {
         if (typeof channel !== "string") channel = channel.id;
@@ -377,7 +378,7 @@ export class API {
             }
         })
         if (Array.isArray(result) && (result.length === 0 || API.isMessage(result[0]))) return result;
-        else throw new Error(new DiscordError(result).toString());
+        else throw new Error((new DiscordError(result)).toString());
     }
     async searchChannelMessages (channel: string | Channel, search: ChannelSearchOptions): Promise<ChannelSearchResult> {
         if (typeof channel !== "string") channel = channel.id;
@@ -393,6 +394,6 @@ export class API {
             }
         })
         if (API.isChannelSearchResult(result)) return result;
-        else throw new Error(new DiscordError(result).toString());
+        else throw new Error((new DiscordError(result)).toString());
     }
 }
