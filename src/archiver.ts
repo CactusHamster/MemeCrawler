@@ -4,7 +4,7 @@ import { API, Attachment, Channel, Guild, Message, snowflake } from "./api"
 import { createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { ClientRequest, IncomingMessage } from "node:http";
 import { request } from "node:https";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { ChunkHandler } from "./chunkhandler";
 
 /*
@@ -20,9 +20,11 @@ export interface ArchiveOptions {
     nonmedia: boolean;
     text: boolean;
     chunklength?: number;
-    before?: number;
-    after?: number;
+    before?: snowflake;
+    after?: snowflake;
     maxFileSize?: number;
+    saveSources?: boolean;
+    overwrite?: boolean;
 }
 export interface ArchiveGuildOptions extends ArchiveOptions {
     channelBlacklist?: snowflake[];
@@ -35,7 +37,8 @@ export interface ArchiveChunkOptions extends ArchiveOptions {
     guild?: snowflake
     channel: snowflake
 }
-interface MessageFile<T = Attachment | Message> { url: string | URL, filename: string, source: T, type: T extends Attachment ? 0 : 1 };
+interface MessageFile<T = Attachment | Message> { url: string | URL, filename: string, source: T, type: T extends Attachment ? 0 : 1, msg: Message };
+interface MessageFile_Attachment { source: Attachment, type: 0 };
 interface MessageContent { author: string, content: string, source: Message }
 
 let quickCopy = <T>(src: T): any => {
@@ -43,11 +46,12 @@ let quickCopy = <T>(src: T): any => {
     for (let key in src) dest[key] = src[key];
     return dest;
 }
-let mediatypes = ["jpg", "png", "jpeg", "webp", "gif"];
+let mediatypes = ["jpg", "png", "jpeg", "webp", "gif", "mov", "mp4", "webm", "gifv", "mp3", "wav"];
 let urlfilename = (url: URL | string): string => {
     if (url instanceof URL) url = url.pathname;
     return basename(url);
 }
+let isMediaAttachment = (attach: Attachment) => "width" in attach && "height" in attach;
 let isMedia = (filename: URL | string): boolean => {
     if (filename instanceof URL) filename = filename.pathname;
     let ext = extname(filename).slice(1).toLowerCase();
@@ -64,6 +68,23 @@ let getResponse = (url: string | URL): Promise<{ response: IncomingMessage, requ
         req.end();
     });
 }
+let download = async (url: string | URL, dest: string, maxSize: number = Infinity): Promise<boolean> => {
+    let success = false;
+    for (let tries = 0; tries < 5; tries++) {
+        try {
+            let { response } = await getResponse(url);
+            if (+(response.headers["content-length"] ?? Infinity) > maxSize) return false;
+            let stream = createWriteStream(dest);
+            response.pipe(stream);
+            success = true;
+            break;
+        } catch (e) {
+            success = false;
+        }
+    }
+    return success;
+} 
+
 export class Archiver extends EventEmitter {
     api: API;
     #destination: string = ".";
@@ -99,10 +120,10 @@ export class Archiver extends EventEmitter {
         for (let channel of channels) this.archiveChannel(channel, newoptions);
     }
     async *listChannelMessages (channel: snowflake, options: ArchiveChannelOptions): AsyncGenerator<Message[], void, unknown> {
-        let lastMessage: string | undefined;
+        let lastMessage: string | undefined = options.before;
         let limit = 100;
         while (true) {
-            let messages: Message[] = await this.api.getChannelMessages(channel, { limit: 100, before: lastMessage });
+            let messages: Message[] = await this.api.getChannelMessages(channel, { limit: 100, before: lastMessage, after: options.after });
             yield messages;
             lastMessage = messages[messages.length - 1].id;
             // If there are no more messages.
@@ -118,9 +139,9 @@ export class Archiver extends EventEmitter {
         try { contenturl = new URL(msg.content); }
         catch (e) { contenturl = null }
         if (contenturl !== null && (contenturl.protocol === "http://" || contenturl.protocol === "https://")) 
-            files.push({ type: 1, source: msg, url: contenturl, filename: urlfilename(contenturl) });
+            files.push({ type: 1, source: msg, url: contenturl, filename: urlfilename(contenturl), msg });
         if (msg?.attachments?.length)
-            for (let attach of msg.attachments) files.push({ type: 0, source: attach, url: attach.url, filename: attach.filename });
+            for (let attach of msg.attachments) files.push({ type: 0, source: attach, url: attach.url, filename: attach.filename, msg });
         return files;
     }
     private static extractMessageContent (msg: Message): MessageContent {
@@ -128,19 +149,62 @@ export class Archiver extends EventEmitter {
         let author = msg?.author?.username ?? "unknown";
         return { content, author, source: msg };
     }
-    async saveFileChunk (options: ArchiveChunkOptions, chunk: MessageFile[], type: "media" | "nonmedia") {
+    async saveFileChunk (options: ArchiveChunkOptions, chunk: MessageFile[], type: "media" | "nonmedia"): Promise<boolean> {
+        if (chunk.length === 0) return true;
         let dir = this.#destination;
         if (options.guild) dir = join(dir, options.guild);
         if (options.channel) dir = join(dir, options.channel);
         dir = join(dir, type);
-
+        if (!existsSync(dir)) await mkdir(dir, { recursive: true });
+        let filedir = join(dir, "files")
+        let entrydir = join(dir, "entries")
+        if (!existsSync(filedir)) await mkdir(filedir);
+        if (!existsSync(entrydir)) await mkdir(entrydir);
+        interface FileEntry { filename: string, filename_original: string, url: string, msgid: string };
+        let entries: FileEntry[] = [];
+        let entryfile = join(dir, "entries", chunk[0].msg.id + ".json");
+        for (let file of chunk) {
+            let name = file.filename;
+            if (name.length > 50) {
+                name = name.slice(0, 50) + extname(file.filename);
+            }
+            name = file.msg.id + "." + name;
+            let writepath = join(dir, "files", name);
+            if (options.overwrite || !existsSync(writepath)) {
+                let success = download(file.url, writepath, options.maxFileSize);
+                if (!success) {
+                    console.warn(`Failed to download "${file.url}".`)
+                    continue;
+                }
+                if (options.saveSources) await writeFile(writepath + ".source.json", Archiver.stringifyMessage(file.msg))
+            }
+            entries.push({
+                filename: name,
+                filename_original: file.filename,
+                url: file.url.toString(),
+                msgid: file.msg.id,
+            });
+        }
+        await writeFile(entryfile, JSON.stringify({
+            entries: entries,
+            date: Date.now(),
+            total: entries.length,
+            spans: [entries[0].msgid, entries[entries.length - 1].msgid],
+        }));
+        return false;
     }
     async saveTextChunk (options: ArchiveChunkOptions, chunk: MessageContent[]) {
         let dir = this.#destination;
         if (options.guild) dir = join(dir, options.guild);
         if (options.channel) dir = join(dir, options.channel);
         dir = join(dir, "text");
-
+        let name = join(dir, chunk[0].source.id + ".json");
+        writeFile(name, JSON.stringify({
+            entries: chunk.map(c => Archiver.stringifyMessage(c.source)),
+            date: Date.now(),
+            total: chunk.length,
+            spans: [chunk[0].source.id, chunk[chunk.length - 1].source.id]
+        }));
     }
     // TODO: make options actually do something :3
     async archiveChannel (channel: snowflake | Channel, options: ArchiveChannelOptions) {
@@ -148,22 +212,30 @@ export class Archiver extends EventEmitter {
         let chunklength = options.chunklength ?? 50;
         // Handle splitting content into chunks.
         let chunkers = { media: new ChunkHandler<MessageFile>(chunklength), nonmedia: new ChunkHandler<MessageFile>(chunklength), text: new ChunkHandler<MessageContent>(chunklength), }
+        let chunklisteners = {
+            media:  async (chunk: MessageFile[]) => await this.saveFileChunk(newoptions, chunk, "media"),
+            nonmedia: async (chunk: MessageFile[]) => await this.saveFileChunk(newoptions, chunk, "nonmedia"),
+            text: async (chunk: MessageContent[]) => await this.saveTextChunk(newoptions, chunk)
+        }
         let newoptions = quickCopy(options);
         newoptions.channel = channel;
-        chunkers.media.on("chunk", (chunk) => this.saveFileChunk(newoptions, chunk, "media"));
-        chunkers.nonmedia.on("chunk", (chunk) => this.saveFileChunk(newoptions, chunk, "nonmedia"));
-        chunkers.text.on("chunk", (chunk) => this.saveTextChunk(newoptions, chunk));
+        chunkers.media.on("chunk",chunklisteners.media);
+        chunkers.nonmedia.on("chunk",chunklisteners.nonmedia);
+        chunkers.text.on("chunk",chunklisteners.text);
         // Iterate through all channel messages.
         const iterator = this.listChannelMessages(channel, options);
         while (true) {
             let { done, value: messages } = await iterator.next()
-            if (done || messages == undefined) break;
+            if (done || (messages == undefined)) break;
             for (let msg of messages) {
                 if (options.media || options.nonmedia) {
                     let files = Archiver.extractMessageFiles(msg);
+                    console.info(`Found ${files.length} files.`)
                     for (let file of files) {
-                        
-                        let ismedia = isMedia(file.filename);
+                        if (file.type === 0 && (file as MessageFile_Attachment).source.size > (options.maxFileSize ?? Infinity)) continue;
+                        let ismedia: boolean = false;
+                        if (file.type === 0) ismedia = isMediaAttachment((file as MessageFile_Attachment).source);
+                        else ismedia = isMedia(file.filename);
                         if (ismedia && options.media) chunkers.media.push(file);
                         if (!ismedia && options.nonmedia) chunkers.nonmedia.push(file);
                     }
@@ -171,5 +243,16 @@ export class Archiver extends EventEmitter {
                 if (options.text) chunkers.text.push(Archiver.extractMessageContent(msg))
             }
         }
+        chunkers.media.end();
+        chunkers.nonmedia.end();
+        chunkers.text.end();
+        chunkers.media.off("chunk",chunklisteners.media);
+        chunkers.nonmedia.off("chunk",chunklisteners.nonmedia);
+        chunkers.text.off("chunk",chunklisteners.text);
+        console.log("success!")
     }
 }
+process.on("unhandledRejection", (e) => {
+    console.error(e)
+    process.exit(1)
+})
