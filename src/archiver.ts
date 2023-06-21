@@ -157,12 +157,12 @@ export class Archiver extends EventEmitter {
         dir = join(dir, type);
         if (!existsSync(dir)) await mkdir(dir, { recursive: true });
         let filedir = join(dir, "files")
-        let entrydir = join(dir, "entries")
+        let entrydir = join(dir, "entries", Date.now().toString())
         if (!existsSync(filedir)) await mkdir(filedir);
-        if (!existsSync(entrydir)) await mkdir(entrydir);
+        if (!existsSync(entrydir)) await mkdir(entrydir, { recursive: true });
         interface FileEntry { filename: string, filename_original: string, url: string, msgid: string };
         let entries: FileEntry[] = [];
-        let entryfile = join(dir, "entries", chunk[0].msg.id + ".json");
+        let entryfile = join(entrydir, chunk[0].msg.id + ".json");
         for (let file of chunk) {
             let name = file.filename;
             if (name.length > 50) {
@@ -227,6 +227,7 @@ export class Archiver extends EventEmitter {
         while (true) {
             let { done, value: messages } = await iterator.next()
             if (done || (messages == undefined)) break;
+            console.log("looping through messages")
             for (let msg of messages) {
                 if (options.media || options.nonmedia) {
                     let files = Archiver.extractMessageFiles(msg);
@@ -242,6 +243,7 @@ export class Archiver extends EventEmitter {
                 }
                 if (options.text) chunkers.text.push(Archiver.extractMessageContent(msg))
             }
+            console.log("ended loop")
         }
         chunkers.media.end();
         chunkers.nonmedia.end();
