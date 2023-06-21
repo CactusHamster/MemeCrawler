@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
-import { sep as SEP, resolve, join, parse, basename, extname } from "node:path";
+import { sep as SEP, resolve, join, basename, extname } from "node:path";
 import { API, Attachment, Channel, Guild, Message, snowflake } from "./api"
-import { createWriteStream, existsSync, mkdirSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { ClientRequest, IncomingMessage } from "node:http";
 import { request } from "node:https";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import {env as ENV} from "node:process";
 import { ChunkHandler } from "./chunkhandler";
 
 /*
@@ -93,6 +94,9 @@ export class Archiver extends EventEmitter {
         this.api = new API(token);
         if (Array.isArray(destination)) this.setDestination(...destination);
         else this.setDestination(destination);
+    }
+    debug (...msg: any[]): void {
+        if (!!ENV.debug) console.log(...msg);
     }
     setDestination (...directory: string[]) {
         let path = resolve(...directory);
@@ -227,11 +231,11 @@ export class Archiver extends EventEmitter {
         while (true) {
             let { done, value: messages } = await iterator.next()
             if (done || (messages == undefined)) break;
-            console.log("looping through messages")
+            this.debug("looping through messages")
             for (let msg of messages) {
                 if (options.media || options.nonmedia) {
                     let files = Archiver.extractMessageFiles(msg);
-                    console.info(`Found ${files.length} files.`)
+                    this.debug(`Found ${files.length} files.`)
                     for (let file of files) {
                         if (file.type === 0 && (file as MessageFile_Attachment).source.size > (options.maxFileSize ?? Infinity)) continue;
                         let ismedia: boolean = false;
@@ -243,7 +247,7 @@ export class Archiver extends EventEmitter {
                 }
                 if (options.text) chunkers.text.push(Archiver.extractMessageContent(msg))
             }
-            console.log("ended loop")
+            this.debug("ended loop")
         }
         chunkers.media.end();
         chunkers.nonmedia.end();
@@ -251,10 +255,6 @@ export class Archiver extends EventEmitter {
         chunkers.media.off("chunk",chunklisteners.media);
         chunkers.nonmedia.off("chunk",chunklisteners.nonmedia);
         chunkers.text.off("chunk",chunklisteners.text);
-        console.log("success!")
+        this.debug("finish!")
     }
 }
-process.on("unhandledRejection", (e) => {
-    console.error(e)
-    process.exit(1)
-})
