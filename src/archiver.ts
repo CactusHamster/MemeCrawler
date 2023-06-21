@@ -37,6 +37,7 @@ export interface ArchiveChannelOptions extends ArchiveOptions {
 export interface ArchiveChunkOptions extends ArchiveOptions {
     guild?: snowflake
     channel: snowflake
+    date: number
 }
 interface MessageFile<T = Attachment | Message> { url: string | URL, filename: string, source: T, type: T extends Attachment ? 0 : 1, msg: Message };
 interface MessageFile_Attachment { source: Attachment, type: 0 };
@@ -161,7 +162,7 @@ export class Archiver extends EventEmitter {
         dir = join(dir, type);
         if (!existsSync(dir)) await mkdir(dir, { recursive: true });
         let filedir = join(dir, "files")
-        let entrydir = join(dir, "entries", Date.now().toString())
+        let entrydir = join(dir, "entries", options.date.toString())
         if (!existsSync(filedir)) await mkdir(filedir);
         if (!existsSync(entrydir)) await mkdir(entrydir, { recursive: true });
         interface FileEntry { filename: string, filename_original: string, url: string, msgid: string };
@@ -223,6 +224,7 @@ export class Archiver extends EventEmitter {
         }
         let newoptions = quickCopy(options);
         newoptions.channel = channel;
+        newoptions.date = Date.now();
         chunkers.media.on("chunk",chunklisteners.media);
         chunkers.nonmedia.on("chunk",chunklisteners.nonmedia);
         chunkers.text.on("chunk",chunklisteners.text);
