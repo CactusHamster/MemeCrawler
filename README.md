@@ -52,7 +52,6 @@ npm run start
 - Archiver seems to freeze up after several hundred attachments (possibly due to following issue).
 - Class `ChunkHandler`, used for splitting API data into limited-length chunks for entryfiles, extends `EventEmitter`.
 - Poor interfacing with external code (e.g. no way to control archive process externally once started).
-- Lack of documentation.
 - Archiver checks all messages through the `GET messages` endpoint rather than using undocumented search API.
 - Functionality is somewhat untested (most of it worked first try though?)
 - Lack of documentation :c
